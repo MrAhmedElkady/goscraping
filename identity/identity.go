@@ -20,6 +20,9 @@ type Identity struct {
 	OSVersion      types.OSVersion
 
 	// Generated values (derived from above)
+	// FingerprintHash is a short unique ID for this generated identity
+	FingerprintHash string
+
 	UserAgent       string
 	SecChUa         string
 	SecChUaMobile   string

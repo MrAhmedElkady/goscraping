@@ -5,62 +5,60 @@ import (
 	"time"
 )
 
-// IdentityConfig defines preferences for generating a browser identity
-type IdentityConfig struct {
-	Browser Browser // chrome | safari | firefox | any
-	Device  Device  // desktop | mobile | tablet | any
-	OS      OS      // windows | macos | linux | android | ios | any
-	Locale  string  // e.g., "en-US"
-
-	Randomize bool   // Generate a new identity if one doesn't exist or forced
-	Stable    bool   // Lock identity to session
-	Seed      string // Optional seed for deterministic generation
-}
-
-// Hooks defines callbacks for observability
+// Hooks defines callbacks for request lifecycle events
 type Hooks struct {
-	OnRequest  func(req *http.Request)
-	OnResponse func(resp *http.Response)
+	OnRequest  func(*http.Request)
+	OnResponse func(*http.Response)
 	OnRetry    func(attempt int, err error)
 }
 
-// Options defines the configuration for a Fetch request
+// Options configuration for the Fetch request
 type Options struct {
-	Method  string
+	// Methods & URL
+	Method string
+	Body   []byte
+
+	// Identity Configuration
+	// Who are we pretending to be?
+	Identity  IdentityConfig
+	SessionID string // Persistent session ID for cookies/identity reuse
+
+	// Network Configuration
+	Timeout  time.Duration
+	ProxyURL string   // Single proxy to use
+	Proxies  []string // List of proxies to rotate
+
+	// Retry Configuration
+	// TODO: Move MaxAttempts here if we want per-request override
+	// Currently it's in retry.Policy defaults.
+
+	// Headers
 	Headers map[string]string
-	Body    []byte
 
-	// Proxy & Rotation
-	ProxyURL string
-	Proxies  []string // List of proxies to rotate through
-
-	// Session
-	SessionID string
-
-	// Behavior config
-	Timeout        time.Duration
-	FollowRedirect bool
-	MaxRedirects   int
-
-	// Identity / Fingerprint config
-	Identity IdentityConfig
-
-	// Observability
+	// Debugging
 	Debug bool
 	Hooks Hooks
 }
 
-// DefaultOptions returns default options
+// DefaultOptions returns safe defaults
 func DefaultOptions() *Options {
 	return &Options{
-		Method:         "GET",
-		Timeout:        30 * time.Second,
-		FollowRedirect: true,
-		MaxRedirects:   10,
+		Method:  "GET",
+		Timeout: 30 * time.Second,
 		Identity: IdentityConfig{
-			Browser: BrowserChrome,
-			Device:  DeviceDesktop,
-			OS:      OSWindows,
+			Browser: BrowserAny,
+			Device:  DeviceAny,
+			OS:      OSAny,
 		},
+		Headers: make(map[string]string),
 	}
+}
+
+// IdentityConfig defines the constraints for generating an identity
+// All fields are optional. Empty fields = Random selection.
+type IdentityConfig struct {
+	Browser Browser
+	Device  Device
+	OS      OS
+	Locale  string
 }

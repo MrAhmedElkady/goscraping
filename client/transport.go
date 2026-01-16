@@ -2,13 +2,13 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
-	"golang.org/x/net/http2"
 )
 
 // ContextKey type for context values
@@ -19,115 +19,154 @@ const (
 	CtxProxyURL ContextKey = "proxy_url"
 )
 
-// Transport implements http.RoundTripper with uTLS support.
-type Transport struct {
+// TransportManager implements http.RoundTripper with uTLS support.
+// It manages a persistent http.Transport to ensure connection reuse.
+// It explicitly enforces HTTP/1.1 to match uTLS capabilities safely.
+type TransportManager struct {
 	// ClientHelloID is the uTLS ClientHello ID to use.
 	ClientHelloID utls.ClientHelloID
 
-	// DialContext specifies the dial function for creating TCP connections.
-	// If nil, &net.Dialer{}.DialContext is used.
-	// This dialer can be wrapped to support proxies.
-	DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+	// underlying is the actual http.Transport that manages connections.
+	// We create this ONCE and reuse it.
+	underlying *http.Transport
+
+	// ForceHTTP1 dictates whether we strictly enforce HTTP/1.1 in ALPN.
+	// Default: true (safest for generic scraping).
+	ForceHTTP1 bool
 }
 
-// NewTransport creates a new Transport.
-func NewTransport(clientHello utls.ClientHelloID) *Transport {
-	// Default dialer
-	dialer := &net.Dialer{Timeout: 30 * time.Second}
-	return &Transport{
+// NewTransportManager creates a new persistent transport manager.
+// This is the V2 recommended constructor.
+func NewTransportManager(clientHello utls.ClientHelloID) *TransportManager {
+	t := &TransportManager{
 		ClientHelloID: clientHello,
-		DialContext:   dialer.DialContext,
+		ForceHTTP1:    true,
 	}
-}
 
-// RoundTrip executes a single HTTP transaction.
-func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// We utilize the underlying http.Transport for connection management and HTTP/2 support.
-	// Crucially, we hook into DialTLSContext to perform the uTLS handshake.
-
-	// Check for proxy in context to determine if we need to wrap the dialer for this request.
-	// However, http.Transport caches connections based on (Scheme, Host, Proxy).
-	// If we use varying proxies per request, we need to ensure http.Transport uses the correct proxy.
-	// http.Transport has a Proxy field: func(*Request) (*url.URL, error).
-
-	// Strategy:
-	// 1. Define a Proxy function that reads from the Request Context.
-	// 2. Pass this function to http.Transport.
-	// 3. For HTTPS (DialTLSContext), we essentially perform "CONNECT" if a proxy is present, then uTLS.
-	//    BUT http.Transport with a Proxy function set AUTOMATICALLY handles the CONNECT
-	//    before calling DialTLSContext??
-	//    Let's check docs/behavior:
-	//    - If Proxy is set, http.Transport connects to the proxy.
-	//    - Then it calls DialTLSContext. The 'network'/'addr' passed to DialTLSContext
-	//      depends. Usually, for HTTPS through proxy, it dials the proxy, does CONNECT...
-	//      ACTUALLY: DialTLSContext is specifically for the *TLS handshake* on an *already connected* socket?
-	//      No, DialTLSContext is "Dial + Handshake".
-	//    - If generic Proxy is used, http.Transport does the TCP dial to proxy + CONNECT.
-	//      Then it expects a TLS handshake.
-	//      However, it doesn't expose the "underlying connection to proxy" to DialTLSContext easily
-	//      if it handles the CONNECT itself. It usually expects DialTLSContext to do EVERYTHING (Dial+Handshake).
-
-	//    - Therefore, if we define DialTLSContext, WE are responsible for traversing the proxy!
-	//      http.Transport will NOT do the CONNECT for us if DialTLSContext is set (mostly).
-
-	//    - So, we will implement the proxy traversal inside dialTLS.
-
-	rt := &http.Transport{
-		DialTLSContext:    t.dialTLS,
-		DialContext:       t.DialContext, // Used for HTTP (plain)
-		ForceAttemptHTTP2: true,
-		// We do NOT set Proxy here because we handle it manually in DialTLS/Dial.
-		// If we set Proxy, standard transport might try to do things we don't want,
-		// or it's redundant if our Dial functions handle it.
-		// Exception: For plain HTTP requests, we might want standard Proxy support?
-		// Let's stick to doing it in the Dialer for consistency.
+	// Create the persistent http.Transport ONCE.
+	// We hook DialTLSContext to inject uTLS logic.
+	t.underlying = &http.Transport{
+		DialTLSContext: t.dialTLS,
+		// DialContext is used for plain HTTP.
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2: false, // We control H2 via ALPN manually
+		MaxIdleConns:      100,
+		IdleConnTimeout:   90 * time.Second,
+		// We do NOT set Proxy here because we handle specific proxy logic in DialTLSContext
+		// to ensure uTLS works correctly over the proxy tunnel.
 		Proxy: nil,
 	}
 
-	if _, err := http2.ConfigureTransports(rt); err != nil {
-		// ignore error if h2 not supported or already configured
-	}
-
-	return rt.RoundTrip(req)
+	return t
 }
 
-func (t *Transport) dialTLS(ctx context.Context, network, addr string) (net.Conn, error) {
-	// 1. Determine dialer (Direct vs Proxy)
-	dialer := t.DialContext
+// RoundTrip delegates to the persistent underlying Transport.
+func (t *TransportManager) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Check for proxy in context for plain HTTP
+	// For HTTPS, dialTLS handles it.
+	// For HTTP, we might need to handle it if we want proxy support there too.
+	// Current implementation keeps it simple for HTTPS focus.
+	return t.underlying.RoundTrip(req)
+}
+
+// dialTLS handles the TCP connection (possibly via Proxy) and the uTLS handshake.
+func (t *TransportManager) dialTLS(ctx context.Context, network, addr string) (net.Conn, error) {
+	// 1. Determine destination host/port
+	hostname := getServerName(addr)
+
+	// 2. Check for Proxy in Context
+	var rawConn net.Conn
+	var err error
 
 	proxyURL, ok := ctx.Value(CtxProxyURL).(string)
+
 	if ok && proxyURL != "" {
-		// Create a proxy dialer for this request
-		// We use the helper from proxy.go
-		// Note: MakeProxyDialer returns a dial function that handles SOCKS5 or HTTP CONNECT
+		// Proxy Path: Dial Proxy -> CONNECT -> uTLS
 		pd, err := MakeProxyDialer(proxyURL, 30*time.Second)
 		if err != nil {
 			return nil, fmt.Errorf("invalid proxy: %w", err)
 		}
-		dialer = pd
+		// This 'dialer' already does the CONNECT handshake if it's an HTTP proxy
+		// or SOCKS5 handshake as appropriate.
+		rawConn, err = pd(ctx, network, addr)
+		if err != nil {
+			return nil, err // Proxy connection failed
+		}
+	} else {
+		// Direct Path: TCP Dial -> uTLS
+		dialer := &net.Dialer{Timeout: 30 * time.Second}
+		rawConn, err = dialer.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	// 2. Dial TCP (through proxy if configured)
-	rawConn, err := dialer(ctx, network, addr)
-	if err != nil {
-		return nil, err
-	}
+	// 3. Prepare uTLS connection with ALPN patching
+	// uTLS Presets (like HelloChrome_120) HARDCODE the ALPN extension to include "h2".
+	// utls.Config.NextProtos DOES NOT override this for Presets.
+	// We must manually edit the Spec to enforce HTTP/1.1 if desired.
 
-	// 3. Wrap with uTLS
-	uConn := utls.UClient(rawConn, &utls.Config{
-		ServerName: getServerName(addr),
-		NextProtos: []string{"h2", "http/1.1"},
-		// InsecureSkipVerify: true, // TODO: Make configurable?
-	}, t.ClientHelloID)
+	var uConn *utls.UConn
+
+	if t.ForceHTTP1 {
+		// 3a. Get the base spec for the Fingerprint
+		spec, err := utls.UTLSIdToSpec(t.ClientHelloID)
+		if err != nil {
+			rawConn.Close()
+			return nil, fmt.Errorf("failed to get uTLS spec: %w", err)
+		}
+
+		// 3b. Patch ALPN extension to remove "h2"
+		for i, ext := range spec.Extensions {
+			if _, ok := ext.(*utls.ALPNExtension); ok {
+				// We found the ALPN extension. Replace it with just http/1.1
+				// Note: We modify the spec slice directly.
+				newAlpn := &utls.ALPNExtension{AlpnProtocols: []string{"http/1.1"}}
+				spec.Extensions[i] = newAlpn
+				break
+			}
+		}
+
+		// 3c. Create Conn with Custom Spec
+		// We use HelloCustom because we are providing a modified spec
+		uConn = utls.UClient(rawConn, &utls.Config{
+			ServerName: hostname,
+			// NextProtos here is a fallback for HelloCustom but good to keep consistent
+			NextProtos: []string{"http/1.1"},
+			MinVersion: tls.VersionTLS12,
+		}, utls.HelloCustom)
+
+		// Apply the spec
+		if err := uConn.ApplyPreset(&spec); err != nil {
+			rawConn.Close()
+			return nil, fmt.Errorf("failed to apply uTLS spec: %w", err)
+		}
+
+	} else {
+		// Standard behavior (might negotiate h2)
+		uConn = utls.UClient(rawConn, &utls.Config{
+			ServerName: hostname,
+			NextProtos: []string{"h2", "http/1.1"},
+			MinVersion: tls.VersionTLS12,
+		}, t.ClientHelloID)
+	}
 
 	// 4. Handshake
 	if err := uConn.Handshake(); err != nil {
-		_ = rawConn.Close()
-		return nil, err
+		rawConn.Close()
+		return nil, fmt.Errorf("uTLS handshake failed: %w", err)
 	}
+
+	// 5. Verify Negotiated Protocol (Optional Debugging)
+	state := uConn.ConnectionState()
+	fmt.Printf("[Debug] Transport Trace: NegotiatedProtocol: %q\n", state.NegotiatedProtocol)
 
 	return uConn, nil
 }
+
 func getServerName(addr string) string {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {

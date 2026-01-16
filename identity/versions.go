@@ -8,25 +8,54 @@ import (
 
 var rng = rand.New(rand.NewSource(time.Now().UnixNano()))
 
-// selectBrowserVersion picks a realistic browser version within the range
-func selectBrowserVersion(browser types.Browser) types.BrowserVersion {
-	switch browser {
-	case types.BrowserChrome:
-		// Pick a version between 114-121
-		major := rng.Intn(types.ChromeVersionRange.MaxMajor-types.ChromeVersionRange.MinMajor+1) + types.ChromeVersionRange.MinMajor
+// selectBrowserVersionForProfile picks a browser version COMPATIBLE with the chosen TLS profile
+func selectBrowserVersionForProfile(profile types.TLSProfile) types.BrowserVersion {
+	var vRange types.VersionRange
+
+	switch profile {
+	case types.TLSProfileChrome120:
+		vRange = types.Chrome120Range
+		// Weighted: 70% chance of latest (MaxMajor), 30% others
+		r := rng.Float64()
+		major := vRange.MaxMajor
+		if r < 0.3 {
+			diff := vRange.MaxMajor - vRange.MinMajor
+			if diff > 0 {
+				major = vRange.MinMajor + rng.Intn(diff)
+			}
+		}
 		return types.BrowserVersion{Major: major, Minor: 0, Patch: 0}
 
-	case types.BrowserSafari:
-		// Pick a version between 15-16
-		major := rng.Intn(types.SafariVersionRange.MaxMajor-types.SafariVersionRange.MinMajor+1) + types.SafariVersionRange.MinMajor
+	case types.TLSProfileChrome106:
+		vRange = types.Chrome106Range
+		major := rng.Intn(vRange.MaxMajor-vRange.MinMajor+1) + vRange.MinMajor
+		return types.BrowserVersion{Major: major, Minor: 0, Patch: 0}
+
+	case types.TLSProfileSafari16:
+		vRange = types.Safari16Range
+		// Safari 16.x preferred (80%), Safari 15.x (20%)
+		r := rng.Float64()
+		major := 16
+		if r < 0.2 {
+			major = 15
+		}
+
 		minor := 0
 		if major == 16 {
-			// Safari 16.0, 16.1, etc.
-			minor = rng.Intn(2) // 0 or 1
+			// Safari 16.6 is very common, or random newer 16.x
+			if rng.Float64() < 0.7 {
+				minor = 6 // 16.6
+			} else {
+				minor = rng.Intn(4 + 1) // 0..4
+			}
+		} else {
+			// Safari 15.x -> 15.4, 15.5
+			minor = rng.Intn(2) + 4
 		}
 		return types.BrowserVersion{Major: major, Minor: minor, Patch: 0}
 
 	default:
+		// Fallback safe defaults
 		return types.BrowserVersion{Major: 120, Minor: 0, Patch: 0}
 	}
 }
@@ -35,52 +64,40 @@ func selectBrowserVersion(browser types.Browser) types.BrowserVersion {
 func selectOSVersion(os types.OS, device types.Device) types.OSVersion {
 	switch os {
 	case types.OSAndroid:
-		// Pick from Android 10-14
-		idx := rng.Intn(len(types.AndroidVersions))
+		// Favor Android 13/14 (indices 3,4) -> 60%
+		r := rng.Float64()
+		idx := 0
+		if r < 0.6 && len(types.AndroidVersions) >= 5 {
+			idx = 3 + rng.Intn(2)
+		} else {
+			idx = rng.Intn(len(types.AndroidVersions))
+		}
 		return types.OSVersion{Version: types.AndroidVersions[idx]}
 
 	case types.OSiOS:
-		// Pick from iOS versions
-		idx := rng.Intn(len(types.IOSVersions))
+		// Favor newest versions (last 3) -> 70%
+		n := len(types.IOSVersions)
+		r := rng.Float64()
+		idx := 0
+		if r < 0.7 && n >= 3 {
+			idx = n - 1 - rng.Intn(3)
+		} else {
+			idx = rng.Intn(n)
+		}
 		return types.OSVersion{Version: types.IOSVersions[idx]}
 
 	case types.OSWindows:
-		// Pick Windows 10 or 11
 		idx := rng.Intn(len(types.WindowsVersions))
 		return types.OSVersion{Version: types.WindowsVersions[idx]}
 
 	case types.OSMacOS:
-		// Pick macOS version
 		idx := rng.Intn(len(types.MacOSVersions))
 		return types.OSVersion{Version: types.MacOSVersions[idx]}
 
 	case types.OSLinux:
-		// Linux doesn't need specific version in UA
 		return types.OSVersion{Version: ""}
 
 	default:
 		return types.OSVersion{Version: "10"}
 	}
-}
-
-// validateVersionCompatibility ensures browser version is compatible with OS version
-// For example, Chrome 120 can't run on Android 8
-func validateVersionCompatibility(browser types.Browser, browserVer types.BrowserVersion, os types.OS, osVer types.OSVersion) bool {
-	// Android version compatibility
-	if os == types.OSAndroid {
-		// Chrome 114+ generally requires Android 7+, so all our versions (10-14) are fine
-		// This is where we'd enforce constraints like "Chrome 121 needs Android 10+"
-		return true
-	}
-
-	// iOS version compatibility
-	if os == types.OSiOS {
-		// Safari versions align with iOS versions
-		// Safari 15 = iOS 15, Safari 16 = iOS 16
-		// We're already ensuring this in the selection logic
-		return true
-	}
-
-	// Desktop OSes are generally compatible with all browser versions
-	return true
 }

@@ -7,73 +7,37 @@ import (
 	utls "github.com/refraction-networking/utls"
 )
 
-// selectTLSFingerprint maps browser version to appropriate uTLS ClientHello ID
-// This is critical for realistic fingerprinting
-func selectTLSFingerprint(browser types.Browser, browserVer types.BrowserVersion, os types.OS) utls.ClientHelloID {
+// selectTLSProfile chooses the best TLS family for the requested browser
+func selectTLSProfile(browser types.Browser, os types.OS) types.TLSProfile {
 	switch browser {
 	case types.BrowserChrome:
-		// Chrome versions 114-121
-		//
-		// uTLS provides various Chrome fingerprints:
-		// - HelloChrome_Auto (latest)
-		// - HelloChrome_120
-		// - HelloChrome_106_Shuffle
-		// etc.
-		//
-		// For realism, we map version ranges to appropriate fingerprints
-		// Note: Exact 1:1 mapping may not exist for all versions
-		// We use the closest available fingerprint
+		// We fundamentally only have a few uTLS profiles.
+		// We should pick one, then let the Version selector pick a matching version.
 
-		if browserVer.Major >= 120 {
-			return client.FingerprintChrome120
-		} else if browserVer.Major >= 106 {
-			// Use Chrome 106 fingerprint for versions 106-119
-			// This is an approximation but reasonable
-			return utls.HelloChrome_106_Shuffle
-		} else {
-			// Fallback to a generic Chrome fingerprint
-			return client.FingerprintChrome120
-		}
+		// Randomly pick between recent modern Chrome (120) and slightly older (106)
+		// to add diversity?
+		// Or default to 120 as it's most modern.
+		return types.TLSProfileChrome120
 
 	case types.BrowserSafari:
-		// Safari fingerprints vary by OS/version
-		// Safari on iOS uses different TLS than Safari on macOS
-
-		if os == types.OSiOS {
-			// iOS Safari
-			// uTLS provides:
-			// - HelloIOS_14 (older)
-			// - HelloSafari_16_0 (macOS)
-			//
-			// For iOS 15-16, we use the Safari 16 fingerprint as closest match
-			return client.FingerprintSafari16
-		} else {
-			// macOS Safari
-			return client.FingerprintSafari16
-		}
+		// Always Safari 16 for now
+		return types.TLSProfileSafari16
 
 	default:
-		// Fallback
-		return client.FingerprintChrome120
+		return types.TLSProfileChrome120
 	}
 }
 
-// IMPORTANT NOTE about TLS Fingerprint Approximations:
-//
-// uTLS ClientHello IDs are specific snapshots of browser versions.
-// We cannot have a perfect 1:1 mapping for every single Chrome/Safari version.
-//
-// Our strategy:
-// 1. Use the closest available fingerprint for the version range
-// 2. Ensure consistency: same browser version = same fingerprint
-// 3. Document approximations
-//
-// For example:
-// - Chrome 114-119 -> Use Chrome 106 or 120 fingerprint (closest available)
-// - Safari 15 -> Use Safari 16 fingerprint (close enough, same TLS stack)
-//
-// This is acceptable because:
-// - Real users don't update browsers instantly
-// - TLS stacks don't change with every minor version
-// - Minor version differences in TLS are hard to detect
-// - Consistency within a session is more important than exact matching
+// getClientHelloID returns the actual uTLS ID for a profile
+func getClientHelloID(profile types.TLSProfile) utls.ClientHelloID {
+	switch profile {
+	case types.TLSProfileChrome120:
+		return client.FingerprintChrome120
+	case types.TLSProfileChrome106:
+		return utls.HelloChrome_106_Shuffle
+	case types.TLSProfileSafari16:
+		return client.FingerprintSafari16
+	default:
+		return client.FingerprintChrome120
+	}
+}

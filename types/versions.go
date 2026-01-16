@@ -14,12 +14,7 @@ func (v BrowserVersion) String() string {
 }
 
 // OSVersion represents an operating system version
-// Different OSes have different versioning schemes
 type OSVersion struct {
-	// For Android: Major version (10, 11, 12, 13)
-	// For iOS: Major.Minor (16.0, 16.1, etc.)
-	// For Windows: Major (10, 11)
-	// For macOS: Major_Minor_Patch (10_15_7, etc.)
 	Version string
 }
 
@@ -29,13 +24,28 @@ type VersionRange struct {
 	MaxMajor int
 }
 
-// Common version ranges for browsers
-var (
-	// Chrome versions 114-121 (realistic range as of 2026)
-	ChromeVersionRange = VersionRange{MinMajor: 114, MaxMajor: 121}
+// TLSProfile represents a browser's TLS stack family
+type TLSProfile string
 
-	// Safari versions 15-16
-	SafariVersionRange = VersionRange{MinMajor: 15, MaxMajor: 16}
+const (
+	TLSProfileChrome120 TLSProfile = "chrome_120"
+	TLSProfileChrome106 TLSProfile = "chrome_106"
+	TLSProfileSafari16  TLSProfile = "safari_16"
+)
+
+// Compatibility Maps
+// These define SAFE, REALISTIC version ranges for a given TLS profile.
+// DO NOT use a version outside these ranges for the corresponding profile.
+var (
+	// Chrome 120 TLS is compatible with versions ~117 to 123
+	// We restrict to 118-121 to be safe and realistic
+	Chrome120Range = VersionRange{MinMajor: 118, MaxMajor: 121}
+
+	// Chrome 106 TLS (older shuffle) compatible with ~100 to 117
+	Chrome106Range = VersionRange{MinMajor: 106, MaxMajor: 117}
+
+	// Safari 16 TLS compatible with Safari 15.x and 16.x
+	Safari16Range = VersionRange{MinMajor: 15, MaxMajor: 16}
 )
 
 // Android version compatibility

@@ -68,7 +68,7 @@ func getOrCreateSession(id string, config types.IdentityConfig, timeout time.Dur
 	ident := identity.Generate(config)
 
 	// Create Transport with Identity's TLS Fingerprint
-	transport := client.NewTransport(ident.ClientHelloID)
+	transport := client.NewTransportManager(ident.ClientHelloID)
 
 	httpClient := &http.Client{
 		Transport: transport,
@@ -149,6 +149,7 @@ func Fetch(urlStr string, opts *types.Options) (*Response, error) {
 	}
 
 	// 5. Execution Loop (Retry Logic)
+	// 5. Execution Loop (Retry Logic)
 	var httpResp *http.Response
 	policy := retry.DefaultPolicy()
 
@@ -167,46 +168,62 @@ func Fetch(urlStr string, opts *types.Options) (*Response, error) {
 
 		httpResp, err = sess.Client.Do(reqWithCtx)
 
-		// Handle Network Errors
-		if err != nil {
-			if opts.Debug {
-				fmt.Printf("[Debug] Attempt %d failed: %v\n", i+1, err)
+		// Determine Action
+		action := policy.Classify(err, httpResp)
+
+		switch action {
+		case retry.Stop:
+			if err != nil {
+				// Fatal Error
+				if opts.Debug && retry.IsProtocolError(err) {
+					fmt.Printf("[Debug] Fatal Protocol Error: %v\n", err)
+				}
+				return nil, err
 			}
+			// Success
+			goto Success
+
+		case retry.Retry, retry.RotateAndRetry:
+			// Log Failure
+			if opts.Debug {
+				reason := "Network/Status"
+				if err != nil {
+					reason = err.Error()
+				} else if httpResp != nil {
+					reason = fmt.Sprintf("Status %d", httpResp.StatusCode)
+				}
+				fmt.Printf("[Debug] Attempt %d failed (%s). Action: %v\n", i+1, reason, action)
+			}
+
 			if opts.Hooks.OnRetry != nil {
 				opts.Hooks.OnRetry(i+1, err)
 			}
 
-			if i < policy.MaxAttempts {
-				rotateProxy() // Network error usually means bad proxy?
-				continue
-			}
-			return nil, err
-		}
-
-		// Handle Blocking / Retry Codes
-		if policy.ShouldRetry(httpResp.StatusCode) {
-			httpResp.Body.Close()
-
-			if opts.Debug {
-				fmt.Printf("[Debug] Attempt %d blocked: %d\n", i+1, httpResp.StatusCode)
-			}
-			if opts.Hooks.OnRetry != nil {
-				opts.Hooks.OnRetry(i+1, fmt.Errorf("status %d", httpResp.StatusCode))
+			// Check if we exhausted retries
+			if i == policy.MaxAttempts {
+				if err != nil {
+					return nil, err
+				}
+				return nil, fmt.Errorf("gave up after %d attempts, last status: %d", i+1, httpResp.StatusCode)
 			}
 
-			if i < policy.MaxAttempts {
+			// Cleanup partial response
+			if httpResp != nil {
+				httpResp.Body.Close()
+			}
+
+			// Rotate Proxy if needed
+			if action == retry.RotateAndRetry {
 				rotateProxy()
-				// TODO: Implement Identity Rotation here if configured?
-				// softRotate vs hardRotate?
-				time.Sleep(1 * time.Second)
-				continue
 			}
-		}
 
-		// Success
-		break
+			// Backoff
+			time.Sleep(time.Duration(i+1) * 500 * time.Millisecond)
+			continue
+		}
 	}
 
+Success:
 	if err != nil {
 		return nil, err
 	}
