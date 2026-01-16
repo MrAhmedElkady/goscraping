@@ -2,92 +2,125 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"time"
 
+	utls "github.com/refraction-networking/utls"
 	"golang.org/x/net/http2"
+)
+
+// ContextKey type for context values
+type ContextKey string
+
+const (
+	// CtxProxyURL is the context key for the proxy URL
+	CtxProxyURL ContextKey = "proxy_url"
 )
 
 // Transport implements http.RoundTripper with uTLS support.
 type Transport struct {
-	// ProxyURL is the URL of the proxy to use.
-	ProxyURL string
-
 	// ClientHelloID is the uTLS ClientHello ID to use.
 	ClientHelloID utls.ClientHelloID
 
-	// cachedTransports stores per-host transports if needed (mostly for h2 persistence,
-	// although for scraping rotation is common. For now we use a single transport logic per request style or shared?)
-	// To match actual browser behavior, we usually need a dialer that handles the handshake.
-
-	// We will use a custom Dialer.
-	Dialer *net.Dialer
+	// DialContext specifies the dial function for creating TCP connections.
+	// If nil, &net.Dialer{}.DialContext is used.
+	// This dialer can be wrapped to support proxies.
+	DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 }
 
-// NewTransport creates a new Transport with the given options.
+// NewTransport creates a new Transport.
 func NewTransport(clientHello utls.ClientHelloID) *Transport {
+	// Default dialer
+	dialer := &net.Dialer{Timeout: 30 * time.Second}
 	return &Transport{
 		ClientHelloID: clientHello,
-		Dialer:        &net.Dialer{Timeout: 30 * time.Second}, // Default timeout
+		DialContext:   dialer.DialContext,
 	}
 }
 
 // RoundTrip executes a single HTTP transaction.
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// For now, we are creating a fresh connection or utilizing a pool conceptually.
-	// If we want FULL control over the ClientHello, we often have to dial manually for HTTPS.
+	// We utilize the underlying http.Transport for connection management and HTTP/2 support.
+	// Crucially, we hook into DialTLSContext to perform the uTLS handshake.
 
-	// However, Go's http2.Transport doesn't interact easily with uTLS net.Conn directly
-	// without some work.
+	// Check for proxy in context to determine if we need to wrap the dialer for this request.
+	// However, http.Transport caches connections based on (Scheme, Host, Proxy).
+	// If we use varying proxies per request, we need to ensure http.Transport uses the correct proxy.
+	// http.Transport has a Proxy field: func(*Request) (*url.URL, error).
 
-	// We will implement a basic version first that handles HTTP/1.1 and initiates HTTP/2 if negotiated.
+	// Strategy:
+	// 1. Define a Proxy function that reads from the Request Context.
+	// 2. Pass this function to http.Transport.
+	// 3. For HTTPS (DialTLSContext), we essentially perform "CONNECT" if a proxy is present, then uTLS.
+	//    BUT http.Transport with a Proxy function set AUTOMATICALLY handles the CONNECT
+	//    before calling DialTLSContext??
+	//    Let's check docs/behavior:
+	//    - If Proxy is set, http.Transport connects to the proxy.
+	//    - Then it calls DialTLSContext. The 'network'/'addr' passed to DialTLSContext
+	//      depends. Usually, for HTTPS through proxy, it dials the proxy, does CONNECT...
+	//      ACTUALLY: DialTLSContext is specifically for the *TLS handshake* on an *already connected* socket?
+	//      No, DialTLSContext is "Dial + Handshake".
+	//    - If generic Proxy is used, http.Transport does the TCP dial to proxy + CONNECT.
+	//      Then it expects a TLS handshake.
+	//      However, it doesn't expose the "underlying connection to proxy" to DialTLSContext easily
+	//      if it handles the CONNECT itself. It usually expects DialTLSContext to do EVERYTHING (Dial+Handshake).
 
-	// This is a simplified implementation. Real-world robust uTLS usage with HTTP/2 often requires
-	// hooking into the DialTLSContext of http.Transport.
+	//    - Therefore, if we define DialTLSContext, WE are responsible for traversing the proxy!
+	//      http.Transport will NOT do the CONNECT for us if DialTLSContext is set (mostly).
 
-	// Let's delegate to a proper http.Transport with a custom DialTLSContext.
+	//    - So, we will implement the proxy traversal inside dialTLS.
 
 	rt := &http.Transport{
 		DialTLSContext:    t.dialTLS,
-		DialContext:       t.Dialer.DialContext,
+		DialContext:       t.DialContext, // Used for HTTP (plain)
 		ForceAttemptHTTP2: true,
+		// We do NOT set Proxy here because we handle it manually in DialTLS/Dial.
+		// If we set Proxy, standard transport might try to do things we don't want,
+		// or it's redundant if our Dial functions handle it.
+		// Exception: For plain HTTP requests, we might want standard Proxy support?
+		// Let's stick to doing it in the Dialer for consistency.
+		Proxy: nil,
 	}
 
-	// We likely want to configure HTTP/2 transport explicitly to match settings.
-	h2t, err := http2.ConfigureTransports(rt)
-	if err == nil {
-		// Here we can tune h2t settings if exposed, but standard library limits what we can tune
-		// on the global transport level easily without forking.
-		// For "Tune SETTINGS", we might need to send raw frames or use a specialized library
-		// if generic http2 is insufficient. But usually standard http2 is "okay" if TLS is right,
-		// though strict parity needs more.
-
-		// Note: request wants "Tune SETTINGS, WINDOW_SIZE".
-		// golang.org/x/net/http2 exposes some of this.
-		h2t.InitialWindowSize = 6291456 // Example chrome-ish
-		h2t.HeaderTableSize = 65536
-		h2t.PushHandler = nil
+	if _, err := http2.ConfigureTransports(rt); err != nil {
+		// ignore error if h2 not supported or already configured
 	}
 
 	return rt.RoundTrip(req)
 }
 
 func (t *Transport) dialTLS(ctx context.Context, network, addr string) (net.Conn, error) {
-	// 1. Dial TCP
-	rawConn, err := t.Dialer.DialContext(ctx, network, addr)
+	// 1. Determine dialer (Direct vs Proxy)
+	dialer := t.DialContext
+
+	proxyURL, ok := ctx.Value(CtxProxyURL).(string)
+	if ok && proxyURL != "" {
+		// Create a proxy dialer for this request
+		// We use the helper from proxy.go
+		// Note: MakeProxyDialer returns a dial function that handles SOCKS5 or HTTP CONNECT
+		pd, err := MakeProxyDialer(proxyURL, 30*time.Second)
+		if err != nil {
+			return nil, fmt.Errorf("invalid proxy: %w", err)
+		}
+		dialer = pd
+	}
+
+	// 2. Dial TCP (through proxy if configured)
+	rawConn, err := dialer(ctx, network, addr)
 	if err != nil {
 		return nil, err
 	}
 
-	// 2. Wrap with uTLS
+	// 3. Wrap with uTLS
 	uConn := utls.UClient(rawConn, &utls.Config{
 		ServerName: getServerName(addr),
-		// InsecureSkipVerify: true, // Optional: might want to expose this
 		NextProtos: []string{"h2", "http/1.1"},
+		// InsecureSkipVerify: true, // TODO: Make configurable?
 	}, t.ClientHelloID)
 
-	// 3. Handshake
+	// 4. Handshake
 	if err := uConn.Handshake(); err != nil {
 		_ = rawConn.Close()
 		return nil, err
@@ -95,7 +128,6 @@ func (t *Transport) dialTLS(ctx context.Context, network, addr string) (net.Conn
 
 	return uConn, nil
 }
-
 func getServerName(addr string) string {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {

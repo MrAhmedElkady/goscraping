@@ -2,6 +2,7 @@ package fetch
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,8 @@ import (
 	"goscraping/headers"
 	"goscraping/retry"
 	"goscraping/types"
+
+	utls "github.com/refraction-networking/utls"
 )
 
 // Session represents a persistent browser session
@@ -20,6 +23,8 @@ type Session struct {
 	ID     string
 	Client *http.Client
 	Jar    *cookies.SessionJar
+	// We could store the assigned fingerprint here to ensure stability
+	FingerprintID utls.ClientHelloID
 }
 
 var (
@@ -28,7 +33,7 @@ var (
 )
 
 // getOrCreateSession retrieves or creates a session
-func getOrCreateSession(id string, proxyURL string, timeout time.Duration) (*Session, error) {
+func getOrCreateSession(id string, timeout time.Duration) (*Session, error) {
 	if id != "" {
 		storeMu.RLock()
 		if sess, ok := sessionStore[id]; ok {
@@ -41,40 +46,15 @@ func getOrCreateSession(id string, proxyURL string, timeout time.Duration) (*Ses
 	// Create new session
 	jar := cookies.NewSessionJar()
 
-	// Transport setup
-	// For now we use Chrome 120 fingerprint as default if not specified
-	// In a real scenario we might vary this per session or allow config
-	transport := client.NewTransport(client.FingerprintChrome120)
-	transport.ProxyURL = proxyURL
-
-	// Configure Proxy
-	if proxyURL != "" {
-		// We use the MakeProxyDialer helper we wrote
-		// We need to inject this into Transport.
-		// client.Transport has Dialer *net.Dialer.
-		// But our MakeProxyDialer returns a func(ctx, net, addr).
-		// Modifying client.Transport to accept a generic dialer or context dialer.
-		// For now, let's assume we can set DialContext on the transport's dialer if compatible,
-		// or we better update NewTransport to accept it.
-		// Given current client implementation:
-		// transport.Dialer is a *net.Dialer.
-		// We need to override the DialTLSContext or similar.
-		// Let's rely on client/proxy.go to handle this logic if we update client.Transport.
-
-		// Simpler approach for this step:
-		// Update client.Transport to have a custom 'ContextDialer'.
-		// But since I can't edit client/transport.go in this specific tool call easily without context switch,
-		// I will assume I can handle this later or do a patch.
-		// Actually, I can use a closure in the DialTLSContext?
-
-		dialer, err := client.MakeProxyDialer(proxyURL, timeout)
-		if err != nil {
-			return nil, err
-		}
-
-		// This effectively overrides the base dialer
-		transport.Dialer.DialContext = dialer
+	// Assign a stable fingerprint for this session
+	// For now, randomly pick between Chrome and Safari? or Default to Chrome.
+	// Real implementation: randomize once, persist.
+	fpID := client.FingerprintChrome120
+	if time.Now().UnixNano()%2 == 0 {
+		// fpID = client.FingerprintSafari16 // Optional randomization
 	}
+
+	transport := client.NewTransport(fpID)
 
 	httpClient := &http.Client{
 		Transport: transport,
@@ -83,9 +63,10 @@ func getOrCreateSession(id string, proxyURL string, timeout time.Duration) (*Ses
 	}
 
 	sess := &Session{
-		ID:     id,
-		Client: httpClient,
-		Jar:    jar,
+		ID:            id,
+		Client:        httpClient,
+		Jar:           jar,
+		FingerprintID: fpID,
 	}
 
 	if id != "" {
@@ -103,8 +84,8 @@ func Fetch(urlStr string, opts *types.Options) (*Response, error) {
 		opts = types.DefaultOptions()
 	}
 
-	// 1. Get Session
-	sess, err := getOrCreateSession(opts.SessionID, opts.ProxyURL, opts.Timeout)
+	// 1. Get Session (Transport is reused)
+	sess, err := getOrCreateSession(opts.SessionID, opts.Timeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to init session: %w", err)
 	}
@@ -116,16 +97,20 @@ func Fetch(urlStr string, opts *types.Options) (*Response, error) {
 	}
 
 	// 3. Generate & Apply Headers
-	// If explicit headers provided, use them. Else generate.
-	// Ideally we merge: browser defaults + user overrides.
-	gen := headers.NewGenerator(headers.ChromeDesktop) // Default to Chrome
-	if opts.HeaderProfile == "safari" {
-		gen = headers.NewGenerator(headers.SafariIOS)
+	// Map Options.HeaderConfig to headers.Config
+	hConfig := headers.Config{
+		Browser: opts.HeaderConfig.Browser,
+		OS:      opts.HeaderConfig.OS,
+		Device:  opts.HeaderConfig.Device,
+		Locale:  opts.HeaderConfig.Locale,
 	}
 
-	// Apply generated headers first
-	browserHeaders := gen.GetHeaders()
+	// If user didn't specify, maybe pull from session?
+	// For now, use options or defaults.
+	browserHeaders := headers.Generate(hConfig)
 	for k, v := range browserHeaders {
+		// Only set if not already set? Or overwrite?
+		// Usually browser headers are base.
 		req.Header[k] = v
 	}
 
@@ -134,32 +119,55 @@ func Fetch(urlStr string, opts *types.Options) (*Response, error) {
 		req.Header.Set(k, v)
 	}
 
-	// 4. Execute with Retry
+	// 4. Proxy Selection
+	currentProxy := opts.ProxyURL
+	proxyList := opts.Proxies
+
+	// Helper to rotate proxy
+	rotateProxy := func() {
+		if len(proxyList) > 0 {
+			// Simple rotation: pop from front, append to back?
+			// Or just random pick?
+			// Let's just pick next.
+			currentProxy = proxyList[0]
+			if len(proxyList) > 1 {
+				proxyList = append(proxyList[1:], proxyList[0])
+			}
+		}
+	}
+
+	// 5. Execute with Retry
 	var httpResp *http.Response
 	policy := retry.DefaultPolicy()
 
 	for i := 0; i <= policy.MaxAttempts; i++ {
-		httpResp, err = sess.Client.Do(req)
+		// Set Proxy in Context
+		ctx := req.Context()
+		if currentProxy != "" {
+			ctx = context.WithValue(ctx, client.CtxProxyURL, currentProxy)
+		}
+		reqWithCtx := req.WithContext(ctx)
+
+		httpResp, err = sess.Client.Do(reqWithCtx)
 		if err != nil {
-			// Network error, maybe retry?
+			// Network error
 			if i < policy.MaxAttempts {
+				rotateProxy()
 				continue
 			}
 			return nil, err
 		}
 
 		if policy.ShouldRetry(httpResp.StatusCode) {
-			// Close body before retry
 			httpResp.Body.Close()
 			if i < policy.MaxAttempts {
-				// Ideally we rotate proxy here if proxy rotation is enabled
-				// For now, we just retry.
-				time.Sleep(1 * time.Second) // Simple backoff
+				rotateProxy()
+				time.Sleep(1 * time.Second) // Backoff
 				continue
 			}
 		}
 
-		// Success or max retries reached without retry condition
+		// Success
 		break
 	}
 
@@ -168,7 +176,7 @@ func Fetch(urlStr string, opts *types.Options) (*Response, error) {
 	}
 	defer httpResp.Body.Close()
 
-	// 5. Read Body
+	// 6. Read Body
 	body, err := io.ReadAll(httpResp.Body)
 	if err != nil {
 		return nil, err
