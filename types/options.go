@@ -1,10 +1,30 @@
 package types
 
 import (
+	"net/http"
 	"time"
 )
 
-// OptionsConfig defines the configuration for a Fetch request
+// IdentityConfig defines preferences for generating a browser identity
+type IdentityConfig struct {
+	Browser Browser // chrome | safari | firefox | any
+	Device  Device  // desktop | mobile | tablet | any
+	OS      OS      // windows | macos | linux | android | ios | any
+	Locale  string  // e.g., "en-US"
+
+	Randomize bool   // Generate a new identity if one doesn't exist or forced
+	Stable    bool   // Lock identity to session
+	Seed      string // Optional seed for deterministic generation
+}
+
+// Hooks defines callbacks for observability
+type Hooks struct {
+	OnRequest  func(req *http.Request)
+	OnResponse func(resp *http.Response)
+	OnRetry    func(attempt int, err error)
+}
+
+// Options defines the configuration for a Fetch request
 type Options struct {
 	Method  string
 	Headers map[string]string
@@ -22,16 +42,12 @@ type Options struct {
 	FollowRedirect bool
 	MaxRedirects   int
 
-	// Fingerprint config
-	HeaderConfig HeaderConfig // Use a custom struct or map
-}
+	// Identity / Fingerprint config
+	Identity IdentityConfig
 
-// HeaderConfig definitions matching headers package
-type HeaderConfig struct {
-	Browser string
-	Device  string
-	OS      string
-	Locale  string
+	// Observability
+	Debug bool
+	Hooks Hooks
 }
 
 // DefaultOptions returns default options
@@ -41,10 +57,10 @@ func DefaultOptions() *Options {
 		Timeout:        30 * time.Second,
 		FollowRedirect: true,
 		MaxRedirects:   10,
-		HeaderConfig: HeaderConfig{
-			Browser: "chrome",
-			Device:  "desktop",
-			OS:      "windows",
+		Identity: IdentityConfig{
+			Browser: BrowserChrome,
+			Device:  DeviceDesktop,
+			OS:      OSWindows,
 		},
 	}
 }

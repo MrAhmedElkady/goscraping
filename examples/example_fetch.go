@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"time"
 
 	"goscraping"
@@ -9,46 +10,88 @@ import (
 )
 
 func main() {
-	fmt.Println("Starting scrape...")
+	fmt.Println("=== goscraping Version-Aware Identity Demo ===\n")
 
-	// 1. Simple Fetch simulating Chrome
-	resp, err := goscraping.Fetch("https://tls.peet.ws/api/all", &goscraping.Options{
-		Method:    "GET",
-		SessionID: "session-1",
-		Timeout:   30 * time.Second,
-		HeaderConfig: types.HeaderConfig{
-			Browser: "chrome",
-			Device:  "desktop",
-			OS:      "windows",
+	// Example 1: Chrome on Android (version will vary)
+	fmt.Println("1. Chrome Mobile (Android with random version):")
+	resp1, err := goscraping.Fetch("https://tls.peet.ws/api/all", &goscraping.Options{
+		SessionID: "android-session-1",
+		Identity: types.IdentityConfig{
+			Browser: types.BrowserChrome,
+			Device:  types.DeviceMobile,
+			OS:      types.OSAndroid,
+			// Browser and OS versions will be randomly selected within realistic ranges
+		},
+		Debug: true,
+		Hooks: types.Hooks{
+			OnRequest: func(req *http.Request) {
+				fmt.Println("  User-Agent:", req.Header.Get("User-Agent"))
+				fmt.Println("  sec-ch-ua:", req.Header.Get("Sec-Ch-Ua"))
+			},
 		},
 	})
 	if err != nil {
-		panic(err)
-	}
-
-	fmt.Printf("Status: %d\n", resp.StatusCode)
-	fmt.Printf("Body length: %d\n", len(resp.Body))
-
-	if len(resp.Body) > 200 {
-		fmt.Println(string(resp.Body[:200]))
+		fmt.Println("  Error:", err)
 	} else {
-		fmt.Println(string(resp.Body))
+		fmt.Printf("  Status: %d\n", resp1.StatusCode)
 	}
+	fmt.Println()
 
-	// 2. Fetch with Safari profile
+	// Example 2: Different Android session (will get different versions)
+	fmt.Println("2. Another Chrome Mobile session (different Android version):")
 	resp2, err := goscraping.Fetch("https://httpbin.org/headers", &goscraping.Options{
-		Method:    "GET",
-		SessionID: "session-safari",
-		HeaderConfig: types.HeaderConfig{
-			Browser: "safari",
-			Device:  "desktop",
-			OS:      "macos",
+		SessionID: "android-session-2",
+		Identity: types.IdentityConfig{
+			Browser: types.BrowserChrome,
+			Device:  types.DeviceMobile,
+			OS:      types.OSAndroid,
 		},
+		Debug: true,
 	})
 	if err != nil {
-		fmt.Printf("Safari fetch failed (expected if httpbin blocks/timesout): %v\n", err)
+		fmt.Println("  Error:", err)
 	} else {
-		fmt.Printf("\nSafari Status: %d\n", resp2.StatusCode)
-		fmt.Println(string(resp2.Body))
+		fmt.Printf("  Status: %d\n\n", resp2.StatusCode)
 	}
+
+	// Example 3: Safari iOS
+	fmt.Println("3. Safari on iOS:")
+	resp3, err := goscraping.Fetch("https://httpbin.org/headers", &goscraping.Options{
+		SessionID: "ios-session",
+		Identity: types.IdentityConfig{
+			Browser: types.BrowserSafari,
+			Device:  types.DeviceMobile,
+			OS:      types.OSiOS,
+		},
+		Debug: true,
+	})
+	if err != nil {
+		fmt.Println("  Error:", err)
+	} else {
+		fmt.Printf("  Status: %d\n\n", resp3.StatusCode)
+	}
+
+	// Example 4: Desktop Chrome on Windows
+	fmt.Println("4. Chrome Desktop (Windows):")
+	resp4, err := goscraping.Fetch("https://httpbin.org/headers", &goscraping.Options{
+		SessionID: "desktop-session",
+		Identity: types.IdentityConfig{
+			Browser: types.BrowserChrome,
+			Device:  types.DeviceDesktop,
+			OS:      types.OSWindows,
+		},
+		Debug:   true,
+		Timeout: 20 * time.Second,
+	})
+	if err != nil {
+		fmt.Println("  Error:", err)
+	} else {
+		fmt.Printf("  Status: %d\n", resp4.StatusCode)
+	}
+
+	fmt.Println("\n=== Demo Complete ===")
+	fmt.Println("Notice how each session gets:")
+	fmt.Println("- Different Android/iOS/browser versions")
+	fmt.Println("- Consistent User-Agent and sec-ch-ua values")
+	fmt.Println("- TLS fingerprints matching the browser version")
 }
