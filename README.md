@@ -1,59 +1,85 @@
 # goscraping
 
-A production-grade, version-consistent, and robust HTTP scraping library for Go.
+**goscraping** is a production-grade HTTP scraping library for Go, designed for
+**protocol correctness, fingerprint consistency, and long-term stability at scale**.
+
+Unlike many scraping tools that rely on brittle hacks, goscraping focuses on
+**doing fewer things correctly**:
+- Stable transports
+- Realistic browser identities
+- Explicit protocol control
+
+---
+
+## Core Principles
+
+goscraping is built around three non-negotiable principles:
+
+1. **Protocol Safety Over Feature Count**
+2. **Statistical Realism Over Perfect Imitation**
+3. **Explicit Design Over Implicit Magic**
+
+If something cannot be implemented safely using `net/http` and `uTLS`,
+it is documented — not hacked around.
+
+---
 
 ## Robustness & Reliability
 
-goscraping is designed to solve the common pitfalls of using `uTLS` with `net/http`:
+### 1. Strict Transport Management (HTTP/1.1 by Default)
 
-1.  **Transport Manager (Strict HTTP/1.1)**:
-    -   We explicitly force `HTTP/1.1` by default to prevent "malformed HTTP response" errors.
-    -   We achieve this by patching the `uTLS` ClientHello spec to only advertise `http/1.1`, ensuring the server never incorrectly negotiates HTTP/2.
-    -   A persistent `http.Transport` is managed to ensure connection reuse (Keep-Alive) while handling proxies via `CONNECT` tunneling.
+goscraping explicitly enforces **HTTP/1.1** to avoid a class of fatal protocol errors
+that occur when combining `uTLS` with Go’s standard `net/http` transport.
 
-2.  **Version-Aware Identity**:
-    -    identities are generated with **weighted realism** (e.g., favoring Android 13/14 over Android 10).
-    -   All Identity signals (User-Agent, sec-ch-ua, TLS Fingerprint) are strictly correlated to avoid detection.
-    -   Identities are immutable per session to prevent behavior shifts.
+- The uTLS ClientHello is patched to advertise **only `http/1.1` via ALPN**
+- This prevents servers from negotiating HTTP/2 unexpectedly
+- A single persistent `http.Transport` is reused per session
+- Proxy support is implemented via proper `CONNECT` tunneling (HTTP & SOCKS5)
 
-3.  **Protocol-Safe Retries**:
-    -   **Network Errors** (Timeout, DNS) -> Retry + Rotate Proxy.
-    -   **Protocol Errors** (Malformed Response, Unsolicited Bytes) -> **Stop Immediately**. Failing fast prevents detection from infinite retry loops on fatal errors.
+> This design eliminates common errors such as:
+> `malformed HTTP response`  
+> `unsolicited response received on idle HTTP channel`
+
+HTTP/2 support is intentionally **disabled by default** and may be introduced later
+as a fully isolated transport.
+
+---
+
+### 2. Version-Aware Identity System
+
+Each session is assigned a **stable, version-consistent browser identity**:
+
+- Realistic, weighted version selection  
+  (e.g. Android 13/14 > Android 10, recent Chrome > older releases)
+- Full correlation between:
+  - `User-Agent`
+  - `sec-ch-ua`
+  - OS / Device metadata
+  - TLS ClientHello fingerprint
+- Identity is **immutable for the lifetime of the session**
+
+This prevents mid-session fingerprint drift, a common detection signal.
+
+---
+
+### 3. Protocol-Safe Retry Strategy
+
+Retries are classified explicitly:
+
+| Category | Behavior |
+|--------|---------|
+| Network errors (DNS, timeout) | Retry + optional proxy rotation |
+| HTTP status (429, 503) | Retry with backoff |
+| Proxy failures | Rotate proxy |
+| **Protocol errors** | **Fail immediately (no retry)** |
+
+Protocol errors include malformed responses, unsolicited bytes, or ALPN mismatches.
+Failing fast is a deliberate design choice to avoid infinite retry loops that amplify
+detection risk.
+
+---
 
 ## Installation
 
 ```bash
 go get github.com/MrAhmedElkady/goscraping
-```
-
-## Quick Start (Robust Fetch)
-
-```go
-package main
-
-import (
-    "fmt"
-    "goscraping"
-    "goscraping/types"
-)
-
-func main() {
-    resp, err := goscraping.Fetch("https://httpbin.org/get", &goscraping.Options{
-        SessionID: "chrome-user",
-        Debug: true, // See protocol trace
-        Identity: types.IdentityConfig{
-            Browser: types.BrowserChrome,
-        },
-    })
-    
-    // Output will show: [Debug] Transport Trace: NegotiatedProtocol: "http/1.1"
-    if err != nil {
-        panic(err)
-    }
-    fmt.Println(resp.StatusCode)
-}
-```
-
-## Why Force HTTP/1.1?
-
-Standard Go `net/http` Transport is not fully compatible with `uTLS` when HTTP/2 is negotiated via ALPN, because `uTLS` hides the negotiation details from the standard transport. goscraping's approach of strictly enforcing HTTP/1.1 is the industry-standard workaround for combining uTLS fingerprinting with the stability of `net/http`.
