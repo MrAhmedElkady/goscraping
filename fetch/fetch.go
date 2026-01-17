@@ -111,7 +111,7 @@ func Fetch(urlStr string, opts *types.Options) (*Response, error) {
 	}
 
 	// 2. Prepare Request
-	req, err := http.NewRequest(opts.Method, urlStr, bytes.NewBuffer(opts.Body))
+	req, err := http.NewRequest(opts.Method, urlStr, bytes.NewReader(opts.Body))
 	if err != nil {
 		return nil, err
 	}
@@ -165,6 +165,13 @@ func Fetch(urlStr string, opts *types.Options) (*Response, error) {
 			ctx = context.WithValue(ctx, client.CtxProxyURL, currentProxy)
 		}
 		reqWithCtx := req.WithContext(ctx)
+
+		// Reset Body for retries (Critical for Post requests)
+		if req.GetBody != nil {
+			if bodyC, err := req.GetBody(); err == nil {
+				reqWithCtx.Body = bodyC
+			}
+		}
 
 		httpResp, err = sess.Client.Do(reqWithCtx)
 
