@@ -1,4 +1,4 @@
-module goscraping
+module github.com/MrAhmedElkady/goscraping
 
 go 1.25.3
 
