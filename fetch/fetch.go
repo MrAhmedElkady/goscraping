@@ -2,6 +2,8 @@ package fetch
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -15,6 +17,7 @@ import (
 	"github.com/MrAhmedElkady/goscraping/identity"
 	"github.com/MrAhmedElkady/goscraping/retry"
 	"github.com/MrAhmedElkady/goscraping/types"
+	"github.com/andybalholm/brotli"
 )
 
 // Session represents a persistent browser session
@@ -234,6 +237,40 @@ Success:
 	if err != nil {
 		return nil, err
 	}
+
+	// Decompression Logic
+	var reader io.ReadCloser
+	switch httpResp.Header.Get("Content-Encoding") {
+	case "gzip":
+		gz, err := gzip.NewReader(httpResp.Body)
+		if err == nil {
+			reader = &readCloser{Reader: gz, Closer: httpResp.Body}
+			// Update header to reflect decoded content
+			httpResp.Header.Del("Content-Encoding")
+			httpResp.Header.Del("Content-Length")
+			httpResp.ContentLength = -1
+			httpResp.Uncompressed = true
+		} else {
+			reader = httpResp.Body
+		}
+	case "deflate":
+		fl := flate.NewReader(httpResp.Body)
+		reader = &readCloser{Reader: fl, Closer: httpResp.Body}
+		httpResp.Header.Del("Content-Encoding")
+		httpResp.Header.Del("Content-Length")
+		httpResp.ContentLength = -1
+		httpResp.Uncompressed = true
+	case "br":
+		br := brotli.NewReader(httpResp.Body)
+		reader = &readCloser{Reader: br, Closer: httpResp.Body}
+		httpResp.Header.Del("Content-Encoding")
+		httpResp.Header.Del("Content-Length")
+		httpResp.ContentLength = -1
+		httpResp.Uncompressed = true
+	default:
+		reader = httpResp.Body
+	}
+	httpResp.Body = reader
 	defer httpResp.Body.Close()
 
 	if opts.Hooks.OnResponse != nil {
@@ -259,4 +296,20 @@ Success:
 		Body:        body,
 		RawResponse: httpResp,
 	}, nil
+}
+
+type readCloser struct {
+	io.Reader
+	io.Closer
+}
+
+func (rc *readCloser) Read(p []byte) (n int, err error) {
+	return rc.Reader.Read(p)
+}
+
+func (rc *readCloser) Close() error {
+	if c, ok := rc.Reader.(io.Closer); ok {
+		c.Close()
+	}
+	return rc.Closer.Close()
 }
