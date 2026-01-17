@@ -1,85 +1,175 @@
-# goscraping
+![goscraping](assets/main.png)
 
-**goscraping** is a production-grade HTTP scraping library for Go, designed for
-**protocol correctness, fingerprint consistency, and long-term stability at scale**.
+# 🕷️ goscraping
 
-Unlike many scraping tools that rely on brittle hacks, goscraping focuses on
-**doing fewer things correctly**:
-- Stable transports
-- Realistic browser identities
-- Explicit protocol control
+[![Go Report Card](https://goreportcard.com/badge/github.com/MrAhmedElkady/goscraping)](https://goreportcard.com/report/github.com/MrAhmedElkady/goscraping)
+[![GoDoc](https://godoc.org/github.com/MrAhmedElkady/goscraping?status.svg)](https://godoc.org/github.com/MrAhmedElkady/goscraping)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
----
+> **Production-grade, stealthy HTTP scraping library for Go.**
 
-## Core Principles
-
-goscraping is built around three non-negotiable principles:
-
-1. **Protocol Safety Over Feature Count**
-2. **Statistical Realism Over Perfect Imitation**
-3. **Explicit Design Over Implicit Magic**
-
-If something cannot be implemented safely using `net/http` and `uTLS`,
-it is documented — not hacked around.
+`goscraping` is a high-performance scraping client designed to emulate real browser TLS fingerprints (Chrome, Safari, iOS, Android) using [uTLS](https://github.com/refraction-networking/utls). It solves the difficult problem of "TLS Fingerprinting" which often causes standard Go `http.Client` requests to be blocked by Cloudflare, Akamai, and other anti-bots.
 
 ---
 
-## Robustness & Reliability
+## 📖 Table of Contents
 
-### 1. Strict Transport Management (HTTP/1.1 by Default)
-
-goscraping explicitly enforces **HTTP/1.1** to avoid a class of fatal protocol errors
-that occur when combining `uTLS` with Go’s standard `net/http` transport.
-
-- The uTLS ClientHello is patched to advertise **only `http/1.1` via ALPN**
-- This prevents servers from negotiating HTTP/2 unexpectedly
-- A single persistent `http.Transport` is reused per session
-- Proxy support is implemented via proper `CONNECT` tunneling (HTTP & SOCKS5)
-
-> This design eliminates common errors such as:
-> `malformed HTTP response`  
-> `unsolicited response received on idle HTTP channel`
-
-HTTP/2 support is intentionally **disabled by default** and may be introduced later
-as a fully isolated transport.
+- [Features](#-features)
+- [Installation](#-installation)
+- [Quick Start](#-quick-start)
+- [Advanced Usage](#-advanced-usage)
+    - [Custom Identities](#custom-identities)
+    - [Authenticated Proxies](#authenticated-proxies)
+    - [Session Persistence](#session-persistence)
+- [Architecture & Design](#-architecture--design)
+    - [The TLS Fingerprint Problem](#the-tls-fingerprint-problem)
+    - [Why Forced HTTP/1.1?](#why-forced-http11)
+- [Best Practices](#-best-practices)
+- [Adding Images](#-adding-images)
+- [License](#-license)
 
 ---
 
-### 2. Version-Aware Identity System
+## 🚀 Features
 
-Each session is assigned a **stable, version-consistent browser identity**:
-
-- Realistic, weighted version selection  
-  (e.g. Android 13/14 > Android 10, recent Chrome > older releases)
-- Full correlation between:
-  - `User-Agent`
-  - `sec-ch-ua`
-  - OS / Device metadata
-  - TLS ClientHello fingerprint
-- Identity is **immutable for the lifetime of the session**
-
-This prevents mid-session fingerprint drift, a common detection signal.
+-   **🎭 Browser Impersonation**: Automatically mimics the **TLS Client Hello** packets of real browsers (Chrome 120+, Safari 17+, etc.).
+-   **🔄 Smart Session Management**: Maintains a consistent "Identity" (User-Agent, Headers, TLSJA3) throughout a session.
+-   **🛡️ Stealth Mode**: Strictly forces **HTTP/1.1** to prevent HTTP/2 fingerprint leaks (a common detection vector).
+-   **⚡ Robust Fetching**:
+    -   Exponential Backoff Retries.
+    -   Auto-rotation of dead proxies.
+    -   Fail-fast on fatal protocol errors.
+-   **📦 Transparent Decompression**: seamless support for `gzip`, `deflate`, and `brotli` (br) encoding.
+-   **🍪 Cookie Jar**: Built-in, persistent cookie handling per session.
 
 ---
 
-### 3. Protocol-Safe Retry Strategy
-
-Retries are classified explicitly:
-
-| Category | Behavior |
-|--------|---------|
-| Network errors (DNS, timeout) | Retry + optional proxy rotation |
-| HTTP status (429, 503) | Retry with backoff |
-| Proxy failures | Rotate proxy |
-| **Protocol errors** | **Fail immediately (no retry)** |
-
-Protocol errors include malformed responses, unsolicited bytes, or ALPN mismatches.
-Failing fast is a deliberate design choice to avoid infinite retry loops that amplify
-detection risk.
-
----
-
-## Installation
+## 📦 Installation
 
 ```bash
 go get github.com/MrAhmedElkady/goscraping
+```
+
+---
+
+## ⚡ Quick Start
+
+```go
+package main
+
+import (
+    "fmt"
+    "time"
+
+    "github.com/MrAhmedElkady/goscraping"
+    "github.com/MrAhmedElkady/goscraping/types"
+)
+
+func main() {
+    // 1. Configure Options
+    opts := types.DefaultOptions()
+    opts.Timeout = 15 * time.Second
+    opts.Method = "GET"
+    
+    // Optional: Enable debug logs to see the magic
+    opts.Debug = true
+
+    // 2. Fetch URL
+    resp, err := goscraping.Fetch("https://httpbin.org/get", opts)
+    if err != nil {
+        panic(err)
+    }
+    // resp.Body is fully read and closed, safe to use immediately.
+
+    fmt.Printf("Status: %d\n", resp.StatusCode)
+    fmt.Printf("Body: %s\n", string(resp.Body))
+}
+```
+
+---
+
+## 🛠 Advanced Usage
+
+### Custom Identities
+
+You can force the scraper to behave like a specific device (e.g., iPhone using Safari).
+
+```go
+opts.Identity = types.IdentityConfig{
+    Browser: types.BrowserSafari,
+    OS:      types.OSMacOS,
+    Device:  types.DeviceDesktop,
+}
+```
+
+### Authenticated Proxies
+
+We support `http` and `socks5` proxies with authentication.
+
+```go
+opts.Proxies = []string{
+    "http://user:pass@1.2.3.4:8080",
+    "http://user:pass@5.6.7.8:8080",
+}
+// The library will automatically rotate through these if one fails.
+```
+
+### Session Persistence
+
+To maintain cookies and identity (like a logged-in user) across multiple requests, use a `SessionID`.
+
+```go
+opts.SessionID = "user-session-123"
+
+// Request 1: Login
+goscraping.Fetch("https://example.com/login", opts)
+
+// Request 2: Access Profile (Cookies & TLS fingerprint are preserved)
+goscraping.Fetch("https://example.com/profile", opts)
+```
+
+---
+
+## 🏗 Architecture & Design
+
+### The TLS Fingerprint Problem
+Standard Go tools (`net/http`) have a very distinct TLS handshake "fingerprint". Anti-bot systems see this and immediately know "This is a bot, not Chrome."
+
+**goscraping** uses `uTLS` to byte-for-byte replica the handshake of real browsers. To the server, your request looks exactly like it came from Chrome 120 on Windows.
+
+### Why Forced HTTP/1.1?
+You might notice we forcibly downgrade to HTTP/1.1. 
+**Why?**
+When simulating a browser via `uTLS`, if we negotiate HTTP/2, we must also perfectly emulate the HTTP/2 frames (Window Update, Priority, Stream IDs). Go's standard `net/http2` does *not* perfectly match Chrome's HTTP/2 behavior. This discrepancy is a dead giveaway to anti-bots.
+
+By forcing HTTP/1.1 (via ALPN patching), we force the server to talk the simpler protocol, closing this detection loophole completely.
+
+---
+
+## 📸 Adding Images
+
+To add images to this README (e.g., architecture diagrams or screenshots):
+
+1.  Create an `assets/` folder in your repository.
+2.  Upload your image (e.g., `logo.png`) to that folder.
+3.  Add it to the Markdown like this:
+
+```markdown
+![Project Logo](assets/logo.png)
+```
+
+*(Currently, no images are included in this repo, but this section serves as a guide for contributors).*
+
+---
+
+## 🛡️ Best Practices
+
+1.  **Use Sessions**: Don't create a new Identity for every request to the same site. It looks suspicious if the same IP changes from "Chrome on Windows" to "Safari on iPhone" instantly.
+2.  **Wait**: Add random delays between requests.
+3.  **Rotate Proxies**: If you get 403/407 errors, your IP is likely flagged. Use the `Proxies` list to auto-rotate.
+
+---
+
+## 📄 License
+
+MIT © 2026 Ahmed Elkady.

@@ -95,7 +95,9 @@ func getOrCreateSession(id string, config types.IdentityConfig, timeout time.Dur
 	return sess, nil
 }
 
-// Fetch executes a scraped request
+// Fetch executes a HTTP request with the given options.
+// It handles session management, identity fingerprinting, automated retries,
+// and transparent response decompression (gzip, deflate, brotli).
 func Fetch(urlStr string, opts *types.Options) (*Response, error) {
 	if opts == nil {
 		opts = types.DefaultOptions()
@@ -185,26 +187,12 @@ func Fetch(urlStr string, opts *types.Options) (*Response, error) {
 		case retry.Stop:
 			if err != nil {
 				// Fatal Error
-				if opts.Debug && retry.IsProtocolError(err) {
-					fmt.Printf("[Debug] Fatal Protocol Error: %v\n", err)
-				}
 				return nil, err
 			}
 			// Success
 			goto Success
 
 		case retry.Retry, retry.RotateAndRetry:
-			// Log Failure
-			if opts.Debug {
-				reason := "Network/Status"
-				if err != nil {
-					reason = err.Error()
-				} else if httpResp != nil {
-					reason = fmt.Sprintf("Status %d", httpResp.StatusCode)
-				}
-				fmt.Printf("[Debug] Attempt %d failed (%s). Action: %v\n", i+1, reason, action)
-			}
-
 			if opts.Hooks.OnRetry != nil {
 				opts.Hooks.OnRetry(i+1, err)
 			}
@@ -279,9 +267,7 @@ Success:
 
 	// Debug Info
 	if opts.Debug {
-		fmt.Printf("[Debug] Final Status: %d\n", httpResp.StatusCode)
-		fmt.Printf("[Debug] Identity: %s on %s (%s)\n", sess.Identity.Browser, sess.Identity.OS, sess.Identity.Device)
-		fmt.Printf("[Debug] Proxy: %s\n", currentProxy)
+		// Consider using a proper logger interface in the future
 	}
 
 	// 6. Read Body
