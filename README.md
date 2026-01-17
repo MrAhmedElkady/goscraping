@@ -146,22 +146,6 @@ By forcing HTTP/1.1 (via ALPN patching), we force the server to talk the simpler
 
 ---
 
-## 📸 Adding Images
-
-To add images to this README (e.g., architecture diagrams or screenshots):
-
-1.  Create an `assets/` folder in your repository.
-2.  Upload your image (e.g., `logo.png`) to that folder.
-3.  Add it to the Markdown like this:
-
-```markdown
-![Project Logo](assets/logo.png)
-```
-
-*(Currently, no images are included in this repo, but this section serves as a guide for contributors).*
-
----
-
 ## 🛡️ Best Practices
 
 1.  **Use Sessions**: Don't create a new Identity for every request to the same site. It looks suspicious if the same IP changes from "Chrome on Windows" to "Safari on iPhone" instantly.
