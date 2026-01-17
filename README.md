@@ -25,7 +25,6 @@
     - [The TLS Fingerprint Problem](#the-tls-fingerprint-problem)
     - [Why Forced HTTP/1.1?](#why-forced-http11)
 - [Best Practices](#-best-practices)
-- [Adding Images](#-adding-images)
 - [License](#-license)
 
 ---
@@ -151,6 +150,20 @@ By forcing HTTP/1.1 (via ALPN patching), we force the server to talk the simpler
 1.  **Use Sessions**: Don't create a new Identity for every request to the same site. It looks suspicious if the same IP changes from "Chrome on Windows" to "Safari on iPhone" instantly.
 2.  **Wait**: Add random delays between requests.
 3.  **Rotate Proxies**: If you get 403/407 errors, your IP is likely flagged. Use the `Proxies` list to auto-rotate.
+
+---
+
+## 🗺️ Roadmap & Status
+
+This project is actively maintained. Below is the current feature status:
+
+- [x] **Advanced TLS Fingerprinting**: Full uTLS integration for Chrome/Safari/iOS mimicry.
+- [x] **Strict HTTP/1.1 Engine**: custom ALPN negotiation to prevent HTTP/2 fingerprint leaks.
+- [x] **Authenticated Proxy Support**: full support for HTTP/SOCKS5 proxies with rotation.
+- [x] **Smart Decompression**: transparent handling of `brotli`, `gzip`, and `deflate`.
+- [x] **Production Stability**: fail-fast logic for protocol errors and robust retries.
+- [ ] **Headless Browser**: future support for JavaScript rendering (via Chrome DevTools Protocol).
+- [ ] **CAPTCHA Solving**: integrated API hooks for major solving services.
 
 ---
 
