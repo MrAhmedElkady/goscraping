@@ -9,12 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"goscraping/client"
-	"goscraping/cookies"
-	"goscraping/headers"
-	"goscraping/identity"
-	"goscraping/retry"
-	"goscraping/types"
+	"github.com/MrAhmedElkady/goscraping/client"
+	"github.com/MrAhmedElkady/goscraping/cookies"
+	"github.com/MrAhmedElkady/goscraping/headers"
+	"github.com/MrAhmedElkady/goscraping/identity"
+	"github.com/MrAhmedElkady/goscraping/retry"
+	"github.com/MrAhmedElkady/goscraping/types"
 )
 
 // Session represents a persistent browser session

@@ -1,8 +1,8 @@
 package identity
 
 import (
-	"goscraping/client"
-	"goscraping/types"
+	"github.com/MrAhmedElkady/goscraping/client"
+	"github.com/MrAhmedElkady/goscraping/types"
 
 	utls "github.com/refraction-networking/utls"
 )

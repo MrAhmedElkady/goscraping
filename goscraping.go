@@ -1,8 +1,8 @@
 package goscraping
 
 import (
-	"goscraping/fetch"
-	"goscraping/types"
+	"github.com/MrAhmedElkady/goscraping/fetch"
+	"github.com/MrAhmedElkady/goscraping/types"
 )
 
 // Alias types for convenient top-level usage

@@ -1,9 +1,10 @@
 package headers
 
 import (
-	"goscraping/identity"
-	"goscraping/types"
 	"net/http"
+
+	"github.com/MrAhmedElkady/goscraping/identity"
+	"github.com/MrAhmedElkady/goscraping/types"
 )
 
 // Generate returns a set of headers based on the Identity

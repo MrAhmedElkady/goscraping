@@ -2,7 +2,8 @@ package identity
 
 import (
 	"fmt"
-	"goscraping/types"
+
+	"github.com/MrAhmedElkady/goscraping/types"
 )
 
 // generateUserAgent creates a realistic User-Agent string based on Identity

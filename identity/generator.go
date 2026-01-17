@@ -2,8 +2,9 @@ package identity
 
 import (
 	"fmt"
-	"goscraping/types"
 	"math/rand"
+
+	"github.com/MrAhmedElkady/goscraping/types"
 )
 
 // Generate creates a new Identity based on config constraints

@@ -5,12 +5,12 @@ import (
 	"net/http"
 	"time"
 
-	"goscraping"
-	"goscraping/types"
+	"github.com/MrAhmedElkady/goscraping"
+	"github.com/MrAhmedElkady/goscraping/types"
 )
 
 func main() {
-	fmt.Println("=== goscraping Version-Aware Identity Demo ===\n")
+	fmt.Println("=== goscraping Version-Aware Identity Demo ===")
 
 	// Example 1: Chrome on Android (version will vary)
 	fmt.Println("1. Chrome Mobile (Android with random version):")

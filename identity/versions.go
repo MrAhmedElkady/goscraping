@@ -1,9 +1,10 @@
 package identity
 
 import (
-	"goscraping/types"
 	"math/rand"
 	"time"
+
+	"github.com/MrAhmedElkady/goscraping/types"
 )
 
 var rng = rand.New(rand.NewSource(time.Now().UnixNano()))
