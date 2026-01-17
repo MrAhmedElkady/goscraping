@@ -3,6 +3,7 @@ package client
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net"
 	"net/http"
@@ -83,7 +84,9 @@ func newHTTPConnectDialer(proxyURL *url.URL, forward *net.Dialer) func(context.C
 		}
 		if proxyURL.User != nil {
 			password, _ := proxyURL.User.Password()
-			req.SetBasicAuth(proxyURL.User.Username(), password)
+			auth := proxyURL.User.Username() + ":" + password
+			basicAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte(auth))
+			req.Header.Set("Proxy-Authorization", basicAuth)
 		}
 
 		if err := req.Write(conn); err != nil {
