@@ -161,8 +161,6 @@ func (t *TransportManager) dialTLS(ctx context.Context, network, addr string) (n
 	}
 
 	// 5. Verify Negotiated Protocol (Optional Debugging)
-	state := uConn.ConnectionState()
-	fmt.Printf("[Debug] Transport Trace: NegotiatedProtocol: %q\n", state.NegotiatedProtocol)
 
 	return uConn, nil
 }
